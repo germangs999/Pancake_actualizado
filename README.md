@@ -1,5 +1,5 @@
 # Pancake_actualizado
-Actualización de la detección de hielo Frazil-Pancake con transfer learning
+Actualización de la detección de hielo Frazil-Pancake vía Transfer Learning implementado con Tensorflow 2.
 
 # Entrenamiento del modelo
 
