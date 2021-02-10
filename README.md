@@ -106,6 +106,10 @@ model.fit(X_train, y_train, epochs=epocas_1,verbose=1, batch_size=32, callbacks 
 La segunda etapa del entrenamiento consta del ajuste de pesos del modelo completo, es decir, descongelamos el modelo base y agregamos callback semejantes a los anteriores:
 
 ```python
+####Ajuste fino
+base_model.trainable = True
+model.compile(optimizer = keras.optimizers.Nadam(1e-4), loss=keras.losses.CategoricalCrossentropy(from_logits=True),
+              metrics = [keras.metrics.Accuracy(), keras.metrics.MeanSquaredError(), keras.metrics.Recall()])
 checkpoint2 = keras.callbacks.ModelCheckpoint(filepath2, monitor='accuracy', verbose=1, save_best_only=True, mode='max')
 earlystop2 = keras.callbacks.EarlyStopping(monitor='accuracy',  min_delta=0.01, patience=15, mode='auto',restore_best_weights=False)
 reduce_lr2 = keras.callbacks.ReduceLROnPlateau(monitor='accuracy', min_delta=0.01, factor=0.1, patience=10, min_lr=1e-7, mode='max')
@@ -113,3 +117,79 @@ callbacks_list2 = [checkpoint2, earlystop2, reduce_lr2, tensorboard_callback, St
 epocas_2 = 200
 model.fit(X_train, y_train, epochs=epocas_2,verbose=1, batch_size=32, callbacks = callbacks_list2)
 ```
+
+Una vez que se calculan y almacenan los pesos del mejor modelo. Las imágenes del conjunto de validación son procesadas por el programa llamado **SegmentacionImgsValidacion.py**. Cada una de esas imágenes debe ser dividida en parches de 224 x 224 pixeles y para ello se tiene la siguiente función:
+
+```python
+def dividir_conjunto_imagen(I, tam):
+    tamx, tamy, tamz = I.shape
+    ventx = floor(tamx/tam)
+    venty = floor(tamy/tam)
+    ##Arreglofinal de las imagenes divididas
+    arreglo_imagen = np.empty((ventx*venty, tam, tam,3), dtype=I.dtype)
+    I_rec = I[:(ventx*tam),:(venty*tam)]
+    #for k in range(I_rec.shape[0]):
+        #print(k)
+    patches2 = view_as_blocks(I_rec, block_shape=(tam,tam,3))
+    arreglo_imagen=patches2.reshape(patches2.shape[0]*patches2.shape[1],patches2.shape[3], patches2.shape[4],3)
+    return I_rec,arreglo_imagen,ventx,venty
+```
+
+Se carga el modelo calculado anteriormente y cada parche es clasificado. Se almacenan las probabilidades de clase para cada parche en un archivo **.mat** para su posterior procesamiento:
+
+```python
+y_pred = model.predict(X_train)
+savemat(carp_etiqueta + modelo[-2:] + modelos[mod][-7:-5] +'_y_pred_'+ name_imgs[img][:4] +'.mat', {'y_pred': y_pred})
+```
+
+Ahora, el despliegue de resultados se realiza a través del programa **DespliegueSegmentacion.m**. De los datos almacenados el archivo **.mat** se puede calcular la etiqueta de clase para cada parche de 224 x 224 pixeles, entonces hay que reconstruir una máscara de segmentación del mismo tamaño de la imagen por cada parche que la compone. La construcción de la máscara se obtiene a partir de determinar la clase del parche y reacomodar dichos parches en la posición que ocupan dentro de la imagen original de validación:
+
+```matlab
+%Leer las etiquetas
+y_pred = load([dir_etiquetas model{mod} '_' fnum{fn} '_y_pred_' im{ix} '.mat']).y_pred;
+%Clasificación final
+[~,y_pred2] = max(y_pred,[],2);
+
+%Imagen recortada a un tamaño adecuado
+I = Imagen(1:(floor(size(Imagen,1)/N))*N, 1:(floor(size(Imagen,2)/N))*N);
+%Obtener las ventanas
+block_0 = mat2cell(I, repmat(N, [1, floor(size(I,1)/N)]), repmat(N, [1, floor(size(I,2)/N)]));
+%Imagen que tendrá las etiquetas de clasificación
+Iseg = zeros(size(I));
+
+l = 1;
+for k = 1:size(block_0,1)
+    for m = 1:size(block_0,2)
+        %Creación de las ventanas
+        cuadro = y_pred2(l,1).*ones(N);
+        Iseg(((k-1)*N)+1:k*N, ((m-1)*N)+1:m*N) = cuadro;
+        l = l+1;
+    end
+end
+
+%Usar solo los que tiene la etiqueta de pancake
+Iseg_1 = (Iseg==1);
+```
+
+También podemos aprovechar que se tiene las máscaras de tierra para cada imagen de validación y la quitamos de la máscara obtenida anteriormente para formar la máscara final de pancake:
+
+```matlab
+%Quitar la tierra
+Tierra = load([dir_tierras im{ix} '_LAND.mat']);
+Tierra = Tierra.h;
+Tierra = logical(Tierra(1:(floor(size(Imagen,1)/N))*N, 1:(floor(size(Imagen,2)/N))*N));
+
+%MÁSCARA FINAL DE PANCAKE
+Pancake_final = Iseg_1 & ~Tierra;
+```
+
+Finalmente, esa máscara de pancake final se compara con la máscara generada por el experto (ground truth) a través del índice Dice, una métrica muy conocida para la validación de segmentaciones:
+
+```matlab
+%Leer las mascaras objetivo
+original = load([dir_original im{ix} '_MASK.mat']).BW;
+original = original(1:(floor(size(original,1)/N))*N, 1:(floor(size(original,2)/N))*N);
+Res_dice(mod,ix,fn) = dice(original,Pancake_final);
+```
+
+
